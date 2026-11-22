@@ -46,6 +46,15 @@
             "enabled": { "type": "boolean" }
           }
         },
+        "watchNamespaces": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "maxLength": 63,
+            "pattern": "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$"
+          }
+        },
         "watchCanary": {
           "type": "object",
           "additionalProperties": false,

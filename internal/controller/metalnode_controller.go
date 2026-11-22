@@ -52,6 +52,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/source"
 
 	inferencev1alpha1 "github.com/defilantech/llmkube/api/v1alpha1"
+	"github.com/defilantech/llmkube/internal/watchscope"
 	"github.com/defilantech/llmkube/pkg/metalnode"
 )
 
@@ -151,6 +152,9 @@ type MetalNodeReconciler struct {
 	// unlabeled one) is read through APIReader. nil reads every Lease through
 	// APIReader.
 	leaseReader client.Reader
+	// WatchNamespaces scopes the Lease cache to the operator's
+	// --watch-namespaces; empty means every namespace.
+	WatchNamespaces []string
 	// InitContainerImage is the operator's curl image (--init-container-image),
 	// which the verifier pod runs.
 	InitContainerImage string
@@ -1032,6 +1036,10 @@ func (r *MetalNodeReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	leaseCache, err := cache.New(mgr.GetConfig(), cache.Options{
 		Scheme: mgr.GetScheme(),
 		Mapper: mgr.GetRESTMapper(),
+		// This cache is not the manager's, so --watch-namespaces has to be
+		// applied here too: under per-namespace Roles a Lease list across
+		// all namespaces is forbidden and the cache would never sync (#1600).
+		DefaultNamespaces: watchscope.DefaultNamespaces(r.WatchNamespaces),
 		ByObject: map[client.Object]cache.ByObject{
 			&coordinationv1.Lease{}: {Label: labels.NewSelector().Add(*hasLabel)},
 		},

@@ -41,6 +41,11 @@ spec:
         {{- if .Values.controllerManager.leaderElection.enabled }}
         - --leader-elect
         {{- end }}
+        {{- with include "llmkube.watchNamespaces" . | fromJsonArray }}
+        # Namespace-scoped watch (#1600): the cache and the per-namespace
+        # Roles in manager-namespaced-rbac.yaml cover the same list.
+        - --watch-namespaces={{ join "," . }}
+        {{- end }}
         {{- $wc := .Values.controllerManager.watchCanary | default dict }}
         {{- if and $wc.interval (ne (toString $wc.interval) "0s") }}
         # Watch-canary stall detection (#2069): the operator renews a lease

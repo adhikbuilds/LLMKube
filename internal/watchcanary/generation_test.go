@@ -288,3 +288,73 @@ func TestNewGenerationLagCheckerValidates(t *testing.T) {
 		t.Fatal("expected the checker to need leader election")
 	}
 }
+
+// TestCheckListsOnlyTheWatchedNamespaces covers the namespace-scoped operator
+// (#1600). The reader refuses a list across all namespaces the way the API
+// server does for an identity bound through per-namespace Roles, so the
+// checker has to ask for each watched namespace by name, and an object
+// lagging in a namespace outside the list must not reach the gauge.
+//
+// Falsification: drop Namespaces from the options (or ignore it in listKind).
+// Every list is then unscoped, is refused, and the gauge stays at 0.
+func TestCheckListsOnlyTheWatchedNamespaces(t *testing.T) {
+	scheme := runtime.NewScheme()
+	if err := inferencev1alpha1.AddToScheme(scheme); err != nil {
+		t.Fatalf("scheme: %v", err)
+	}
+	inNamespace := func(ns, name string) *inferencev1alpha1.InferenceService {
+		o := isvcAt(name, types.UID(ns+"-"+name), 2, cond("Available", 1))
+		o.Namespace = ns
+		return o
+	}
+	objs := []client.Object{
+		inNamespace("team-a", "lagging"),
+		inNamespace("team-b", "lagging"),
+		inNamespace("unwatched", "lagging"),
+	}
+	var listed []string
+	reader := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithObjects(objs...).
+		WithInterceptorFuncs(interceptor.Funcs{
+			List: func(ctx context.Context, c client.WithWatch, list client.ObjectList, opts ...client.ListOption) error {
+				lo := &client.ListOptions{}
+				lo.ApplyOptions(opts)
+				if lo.Namespace == "" {
+					return errors.New("forbidden: cannot list at the cluster scope")
+				}
+				if _, ok := list.(*inferencev1alpha1.InferenceServiceList); ok {
+					listed = append(listed, lo.Namespace)
+				}
+				return c.List(ctx, list, opts...)
+			},
+		}).
+		Build()
+	c, err := newGenerationLagChecker(reader, GenerationLagOptions{
+		Interval:   time.Minute,
+		Threshold:  time.Minute,
+		Namespaces: []string{"team-a", "team-b"},
+		Log:        logr.Discard(),
+	})
+	if err != nil {
+		t.Fatalf("new checker: %v", err)
+	}
+	t.Cleanup(func() { metrics.SetUnreconciledGeneration(KindInferenceService, 0, 0) })
+
+	t0 := time.Unix(1750000000, 0)
+	c.check(context.Background(), t0)
+	c.check(context.Background(), t0.Add(2*time.Minute))
+
+	if got := testutil.ToFloat64(metrics.UnreconciledGenerationObjects.WithLabelValues(KindInferenceService)); got != 2 {
+		t.Errorf("lagging InferenceServices = %v, want 2: one in each watched namespace and none from the unwatched one", got)
+	}
+	want := []string{"team-a", "team-b", "team-a", "team-b"}
+	if len(listed) != len(want) {
+		t.Fatalf("InferenceService lists went to %v, want %v", listed, want)
+	}
+	for i := range want {
+		if listed[i] != want[i] {
+			t.Fatalf("InferenceService lists went to %v, want %v", listed, want)
+		}
+	}
+}

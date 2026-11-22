@@ -34,6 +34,21 @@ controllerManager:
   leaderElection:
     enabled: true
 
+  # Namespace-scoped watch (#1600). Empty (the default) watches every
+  # namespace and binds all of the operator's rules through one ClusterRole.
+  # With a list, the operator watches and reconciles only these namespaces
+  # plus its own (always included), the rules on namespaced resources
+  # (Deployments, Services, Pods, PVCs, Secrets, ConfigMaps, the
+  # inference.llmkube.dev kinds, ...) move to a Role and RoleBinding in each
+  # of them, and the ClusterRole keeps only what no Role can grant: read
+  # access to Nodes, PersistentVolumes, PriorityClasses and Namespaces, and
+  # FederatedClusters. An object in a namespace outside the list is not seen:
+  # it gets no status and no event. The namespaces must exist before the
+  # install; the chart does not create them. To watch only the operator's own
+  # namespace, list it.
+  # Example: ["team-a", "team-b"]
+  watchNamespaces: []
+
   # Watch-canary stall detection (#2069). The operator renews a Lease in its
   # own namespace every interval and requires its own informer to deliver the
   # write back; when a write goes unobserved for failAfter the liveness probe

@@ -133,6 +133,7 @@ fit, keeping the role suffix that identifies the object.
 | `controllerManager.replicaCount` | Number of controller replicas | `1` |
 | `controllerManager.revisionHistoryLimit` | Old ReplicaSets kept on the controller Deployment (0 keeps none) | `3` |
 | `controllerManager.leaderElection.enabled` | Enable leader election | `true` |
+| `controllerManager.watchNamespaces` | Namespaces the operator watches, bound through a Role in each instead of the cluster-wide ClusterRole. The release namespace is always included. Empty watches every namespace | `[]` |
 | `controllerManager.resources.limits.cpu` | CPU limit | `500m` |
 | `controllerManager.resources.limits.memory` | Memory limit | `2Gi` |
 | `controllerManager.resources.requests.cpu` | CPU request | `10m` |

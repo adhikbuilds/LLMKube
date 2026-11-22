@@ -30,6 +30,7 @@ import (
 
 	inferencev1alpha1 "github.com/defilantech/llmkube/api/v1alpha1"
 	"github.com/defilantech/llmkube/internal/metrics"
+	"github.com/defilantech/llmkube/internal/watchscope"
 )
 
 // The kind label values of the generation-lag gauges.
@@ -47,6 +48,12 @@ type GenerationLagOptions struct {
 	// operator's --reconcile-timeout so a reconcile that runs to its deadline
 	// does not count.
 	Threshold time.Duration
+	// Namespaces limits the lists to these namespaces, one List per
+	// namespace. Set it to the operator's --watch-namespaces (#1600): the
+	// checker reads through the API server, and an operator bound through
+	// per-namespace Roles is forbidden a list across all namespaces. Empty
+	// lists every namespace in one call.
+	Namespaces []string
 	// Now is the clock, injectable for tests.
 	Now func() time.Time
 	// Log receives the checker's lifecycle and per-object lag logs.
@@ -92,7 +99,7 @@ type lagObject struct {
 
 type lagKind struct {
 	name string
-	list func(ctx context.Context, r client.Reader) ([]lagObject, error)
+	list func(ctx context.Context, r client.Reader, opts ...client.ListOption) ([]lagObject, error)
 }
 
 var lagKinds = []lagKind{
@@ -164,7 +171,7 @@ func (c *GenerationLagChecker) Start(ctx context.Context) error {
 // about whether that kind's objects caught up.
 func (c *GenerationLagChecker) check(ctx context.Context, now time.Time) {
 	for _, k := range lagKinds {
-		objs, err := k.list(ctx, c.reader)
+		objs, err := c.listKind(ctx, k)
 		if err != nil {
 			c.log.Error(err, "unreconciled-generation list failed; keeping the previous values", "kind", k.name)
 			continue
@@ -172,6 +179,21 @@ func (c *GenerationLagChecker) check(ctx context.Context, now time.Time) {
 		objects, oldest := c.observe(k.name, objs, now)
 		metrics.SetUnreconciledGeneration(k.name, objects, oldest)
 	}
+}
+
+// listKind lists one kind across the checker's scope. Any namespace failing
+// fails the whole kind: a partial list would read the missing namespace's
+// objects as caught up and drop their lag clocks.
+func (c *GenerationLagChecker) listKind(ctx context.Context, k lagKind) ([]lagObject, error) {
+	var all []lagObject
+	for _, scope := range watchscope.ListScopes(c.opts.Namespaces) {
+		objs, err := k.list(ctx, c.reader, scope...)
+		if err != nil {
+			return nil, err
+		}
+		all = append(all, objs...)
+	}
+	return all, nil
 }
 
 // observe folds one List of a kind into the tracking and returns the number
@@ -253,9 +275,9 @@ func GenerationUnreconciled(obj client.Object, conditions []metav1.Condition) bo
 	return obj.GetGeneration() > MaxObservedGeneration(conditions)
 }
 
-func listInferenceServices(ctx context.Context, r client.Reader) ([]lagObject, error) {
+func listInferenceServices(ctx context.Context, r client.Reader, opts ...client.ListOption) ([]lagObject, error) {
 	list := &inferencev1alpha1.InferenceServiceList{}
-	if err := r.List(ctx, list); err != nil {
+	if err := r.List(ctx, list, opts...); err != nil {
 		return nil, err
 	}
 	out := make([]lagObject, 0, len(list.Items))
@@ -265,9 +287,9 @@ func listInferenceServices(ctx context.Context, r client.Reader) ([]lagObject, e
 	return out, nil
 }
 
-func listModels(ctx context.Context, r client.Reader) ([]lagObject, error) {
+func listModels(ctx context.Context, r client.Reader, opts ...client.ListOption) ([]lagObject, error) {
 	list := &inferencev1alpha1.ModelList{}
-	if err := r.List(ctx, list); err != nil {
+	if err := r.List(ctx, list, opts...); err != nil {
 		return nil, err
 	}
 	out := make([]lagObject, 0, len(list.Items))

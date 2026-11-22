@@ -71,6 +71,9 @@ sections:
       - label: OpenShift / OKD / MicroShift install
         slug: guides/openshift-install
         file: guides/openshift-install.md
+      - label: Namespace-scoped install
+        slug: guides/namespace-scoped-install
+        file: guides/namespace-scoped-install.md
       - label: macOS Metal Agent
         slug: guides/macos-metal
         file: guides/macos-metal.md

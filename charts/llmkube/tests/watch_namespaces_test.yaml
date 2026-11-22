@@ -1,0 +1,202 @@
+suite: namespace-scoped watch (#1600)
+templates:
+  - clusterrole.yaml
+  - clusterrolebinding.yaml
+  - manager-namespaced-rbac.yaml
+  - deployment.yaml
+
+tests:
+  # The default must stay exactly what every existing install runs: one
+  # ClusterRole carrying everything, no per-namespace Roles, no flag.
+  - it: keeps the namespaced rules in the ClusterRole by default
+    template: clusterrole.yaml
+    asserts:
+      - contains:
+          path: rules
+          content:
+            apiGroups: ["apps"]
+            resources: ["deployments"]
+            verbs: ["create", "delete", "get", "list", "patch", "update", "watch"]
+      - contains:
+          path: rules
+          content:
+            apiGroups: [""]
+            resources: ["namespaces", "nodes"]
+            verbs: ["get", "list", "watch"]
+
+  - it: renders no per-namespace Role by default
+    template: manager-namespaced-rbac.yaml
+    asserts:
+      - hasDocuments:
+          count: 0
+
+  - it: passes no --watch-namespaces flag by default
+    template: deployment.yaml
+    asserts:
+      - notContains:
+          path: spec.template.spec.containers[0].args
+          content: --watch-namespaces=
+          any: true
+
+  # The point of the feature: with a list, the ClusterRole holds only rules a
+  # Role cannot grant. Any namespaced rule left here would keep the operator's
+  # cluster-wide reach.
+  - it: leaves only cluster-scoped resources in the ClusterRole when namespaces are listed
+    template: clusterrole.yaml
+    set:
+      controllerManager.watchNamespaces: [team-a]
+    asserts:
+      - equal:
+          path: rules
+          value:
+            - apiGroups: [""]
+              resources: ["namespaces", "nodes"]
+              verbs: ["get", "list", "watch"]
+            - apiGroups: ["federation.llmkube.dev"]
+              resources: ["federatedclusters"]
+              verbs: ["get", "list", "watch"]
+            - apiGroups: ["federation.llmkube.dev"]
+              resources: ["federatedclusters/status"]
+              verbs: ["get", "patch", "update"]
+            - apiGroups: [""]
+              resources: ["persistentvolumes"]
+              verbs: ["get", "list", "watch"]
+            - apiGroups: ["scheduling.k8s.io"]
+              resources: ["priorityclasses"]
+              verbs: ["get", "list", "watch"]
+
+  # Sorted, and always including the operator's own namespace: its Leases,
+  # the model-cache PVC and the dashboard source live there.
+  - it: passes the watched namespaces plus the release namespace to the binary
+    template: deployment.yaml
+    set:
+      controllerManager.watchNamespaces: [team-b, team-a]
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].args
+          content: --watch-namespaces=NAMESPACE,team-a,team-b
+
+  - it: does not repeat the release namespace when it is listed
+    template: deployment.yaml
+    release:
+      namespace: llmkube-system
+    set:
+      controllerManager.watchNamespaces: [llmkube-system]
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].args
+          content: --watch-namespaces=llmkube-system
+
+  - it: renders a Role and RoleBinding in every watched namespace
+    template: manager-namespaced-rbac.yaml
+    set:
+      controllerManager.watchNamespaces: [team-a, team-b]
+    asserts:
+      - hasDocuments:
+          count: 6
+      - isKind:
+          of: Role
+        documentIndex: 0
+      - equal:
+          path: metadata.namespace
+          value: NAMESPACE
+        documentIndex: 0
+      - isKind:
+          of: RoleBinding
+        documentIndex: 1
+      - equal:
+          path: metadata.namespace
+          value: NAMESPACE
+        documentIndex: 1
+      - equal:
+          path: metadata.namespace
+          value: team-a
+        documentIndex: 2
+      - equal:
+          path: metadata.namespace
+          value: team-a
+        documentIndex: 3
+      - equal:
+          path: metadata.namespace
+          value: team-b
+        documentIndex: 4
+      - equal:
+          path: metadata.namespace
+          value: team-b
+        documentIndex: 5
+
+  - it: grants the namespaced rules through the Role
+    template: manager-namespaced-rbac.yaml
+    set:
+      controllerManager.watchNamespaces: [team-a]
+    documentIndex: 2
+    asserts:
+      - equal:
+          path: metadata.name
+          value: RELEASE-NAME-llmkube-manager-role
+      - contains:
+          path: rules
+          content:
+            apiGroups: ["apps"]
+            resources: ["deployments"]
+            verbs: ["create", "delete", "get", "list", "patch", "update", "watch"]
+      - contains:
+          path: rules
+          content:
+            apiGroups: [""]
+            resources: ["pods"]
+            verbs: ["get", "list", "watch"]
+      # A Role cannot grant a cluster-scoped resource; one listed here would
+      # read as granted and 403 at runtime.
+      - notContains:
+          path: rules
+          content:
+            apiGroups: [""]
+            resources: ["namespaces", "nodes"]
+            verbs: ["get", "list", "watch"]
+
+  # The binding's subject is the operator's ServiceAccount in the operator's
+  # namespace, not one in the watched namespace.
+  - it: binds each Role to the controller ServiceAccount in the release namespace
+    template: manager-namespaced-rbac.yaml
+    set:
+      controllerManager.watchNamespaces: [team-a]
+    documentIndex: 3
+    asserts:
+      - equal:
+          path: roleRef
+          value:
+            apiGroup: rbac.authorization.k8s.io
+            kind: Role
+            name: RELEASE-NAME-llmkube-manager-role
+      - equal:
+          path: subjects
+          value:
+            - kind: ServiceAccount
+              name: RELEASE-NAME-llmkube-controller-manager
+              namespace: NAMESPACE
+
+  - it: still binds the reduced ClusterRole
+    template: clusterrolebinding.yaml
+    set:
+      controllerManager.watchNamespaces: [team-a]
+    asserts:
+      - equal:
+          path: roleRef.name
+          value: RELEASE-NAME-llmkube-manager-role
+
+  - it: renders no manager RBAC at all when rbac.create is false
+    template: manager-namespaced-rbac.yaml
+    set:
+      rbac.create: false
+      controllerManager.watchNamespaces: [team-a]
+    asserts:
+      - hasDocuments:
+          count: 0
+
+  - it: rejects a namespace that is not a DNS label
+    template: deployment.yaml
+    set:
+      controllerManager.watchNamespaces: ["Team_A"]
+    asserts:
+      - failedTemplate: {}

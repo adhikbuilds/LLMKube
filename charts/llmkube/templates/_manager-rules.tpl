@@ -1,0 +1,382 @@
+{{/*
+The controller manager's RBAC rules, split by the scope of the resource so a
+namespace-scoped install (controllerManager.watchNamespaces, #1600) can bind
+the namespaced half through a Role in each watched namespace.
+
+Adding a rule: a cluster-scoped resource (`kubectl api-resources
+--namespaced=false`) goes in llmkube.manager.clusterRules, everything else in
+llmkube.manager.namespacedRules. A cluster-scoped resource placed in the
+namespaced half is granted by a Role, which cannot grant it, and the operator
+gets a 403 as soon as watchNamespaces is set; make check-helm-rbac fails on
+that.
+*/}}
+
+{{/*
+Namespaces the controller watches, as a JSON array. Empty means cluster-wide.
+The operator's own namespace is always part of a non-empty list: its
+leader-election and watch-canary Leases, the model-cache PVC and the Grafana
+dashboard source live there.
+*/}}
+{{- define "llmkube.watchNamespaces" -}}
+{{- $namespaces := list -}}
+{{- with .Values.controllerManager.watchNamespaces -}}
+{{- $namespaces = append . (include "llmkube.namespace" $) | uniq | sortAlpha -}}
+{{- end -}}
+{{- $namespaces | toJson -}}
+{{- end }}
+
+{{/*
+Rules on cluster-scoped resources. Always in the ClusterRole: no Role can
+grant them, whatever the operator watches.
+*/}}
+{{- define "llmkube.manager.clusterRules" -}}
+- apiGroups:
+  - ""
+  resources:
+  - namespaces
+  - nodes
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
+  - federation.llmkube.dev
+  resources:
+  - federatedclusters
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
+  - federation.llmkube.dev
+  resources:
+  - federatedclusters/status
+  verbs:
+  - get
+  - patch
+  - update
+# Read-only, and only to tell a volume the provisioner never stamped from one
+# that is legitimately pinned elsewhere: both produce the same scheduler
+# wording, and the operator should not assert a cause it has not established.
+- apiGroups:
+  - ""
+  resources:
+  - persistentvolumes
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
+  - scheduling.k8s.io
+  resources:
+  - priorityclasses
+  verbs:
+  - get
+  - list
+  - watch
+{{- end }}
+
+{{/*
+Rules on namespaced resources. In the ClusterRole when the operator watches
+every namespace, in a Role per watched namespace otherwise.
+*/}}
+{{- define "llmkube.manager.namespacedRules" -}}
+- apiGroups:
+  - ""
+  resources:
+  - configmaps
+  - serviceaccounts
+  - services
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - ""
+  - events.k8s.io
+  resources:
+  - events
+  verbs:
+  - create
+  - patch
+# Read-only here; the create and delete verbs for multi-node member pods are
+# in their own rule below.
+- apiGroups:
+  - ""
+  resources:
+  - pods
+  verbs:
+  - get
+  - list
+  - watch
+# Secrets get their own rule so the create verb (the per-namespace Metal relay
+# token, llmkube-metal-relay) does not widen namespaces, nodes or pods.
+- apiGroups:
+  - ""
+  resources:
+  - secrets
+  verbs:
+  - create
+  - get
+  - list
+  - watch
+# Multi-node serving groups own their member pods directly (#1423); the
+# other core resources above stay read-only.
+- apiGroups:
+  - ""
+  resources:
+  - pods
+  verbs:
+  - create
+  - delete
+- apiGroups:
+  - discovery.k8s.io
+  resources:
+  - endpointslices
+  verbs:
+  - get
+  - list
+  - patch
+  - watch
+- apiGroups:
+  - ""
+  resources:
+  - persistentvolumeclaims
+  verbs:
+  - create
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - ""
+  resources:
+  - pods/eviction
+  verbs:
+  - create
+- apiGroups:
+  - apps
+  resources:
+  - deployments
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - autoscaling
+  resources:
+  - horizontalpodautoscalers
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - inference.llmkube.dev
+  resources:
+  - gpuquotas
+  - inferenceservices
+  - loraadapters
+  - modelpools
+  - modelrouters
+  - models
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+# MetalNodes are created by the admin (llmkube metal token create); the
+# controller only reads them and writes their status.
+- apiGroups:
+  - inference.llmkube.dev
+  resources:
+  - metalnodes
+  verbs:
+  - get
+  - list
+  - watch
+# The metal-agent's heartbeat Lease, read by the MetalNode controller.
+- apiGroups:
+  - coordination.k8s.io
+  resources:
+  - leases
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
+  - inference.llmkube.dev
+  resources:
+  - inferenceservices/finalizers
+  - loraadapters/finalizers
+  - metalnodes/finalizers
+  - modelpools/finalizers
+  - modelrouters/finalizers
+  - models/finalizers
+  verbs:
+  - update
+- apiGroups:
+  - inference.llmkube.dev
+  resources:
+  - gpuquotas/status
+  - inferenceservices/status
+  - loraadapters/status
+  - metalnodes/status
+  - modelpools/status
+  - modelrouters/status
+  - models/status
+  verbs:
+  - get
+  - patch
+  - update
+- apiGroups:
+  - gateway.envoyproxy.io
+  resources:
+  - backends
+  - backendtrafficpolicies
+  - securitypolicies
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - aigateway.envoyproxy.io
+  resources:
+  - aigatewayroutes
+  - aiservicebackends
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - inference.networking.k8s.io
+  resources:
+  - inferencepools
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - agentgateway.dev
+  resources:
+  - agentgatewaymodels
+  - agentgatewaypolicies
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - gateway.networking.k8s.io
+  resources:
+  - gateways
+  verbs:
+  - get
+- apiGroups:
+  - gateway.networking.k8s.io
+  resources:
+  - httproutes
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - grafana.integreatly.org
+  resources:
+  - grafanadashboards
+  verbs:
+  - create
+  - delete
+  - get
+  - update
+- apiGroups:
+  - pyrra.dev
+  resources:
+  - servicelevelobjectives
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - rbac.authorization.k8s.io
+  resources:
+  - rolebindings
+  - roles
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - resource.k8s.io
+  resources:
+  - resourceclaims
+  - resourceclaimtemplates
+  verbs:
+  - get
+  - list
+  - watch
+# Model prefetch (#904) creates and polls a batch Job per prefetching Model.
+# Without this the controller-runtime cache cannot start its Job informer, the
+# reflector retries the cluster-scoped list forever, and prefetch is dead with
+# only a "Failed to watch" line to show for it (#1593).
+- apiGroups:
+  - batch
+  resources:
+  - jobs
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - watch
+# Read by the offload log reader (clientsetPodLogReader in cmd/main.go), which
+# parses a ready pod's serving log to populate status.acceleration.
+- apiGroups:
+  - ""
+  resources:
+  - pods/log
+  verbs:
+  - get
+{{- end }}

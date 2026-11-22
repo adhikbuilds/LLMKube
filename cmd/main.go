@@ -56,6 +56,7 @@ import (
 	"github.com/defilantech/llmkube/internal/ocipublish"
 	"github.com/defilantech/llmkube/internal/tracing"
 	"github.com/defilantech/llmkube/internal/watchcanary"
+	"github.com/defilantech/llmkube/internal/watchscope"
 	// +kubebuilder:scaffold:imports
 )
 
@@ -302,6 +303,14 @@ func main() {
 			"without repeating the URL on every ModelRouter. Empty means "+
 			"users must specify url explicitly.")
 	flag.StringVar(&probeAddr, "health-probe-bind-address", ":8081", "The address the probe endpoint binds to.")
+	var watchNamespaces string
+	flag.StringVar(&watchNamespaces, "watch-namespaces", "",
+		"Comma-separated namespaces the operator watches and reconciles (#1600). Empty (the default) watches "+
+			"every namespace. When set, the cache lists and watches namespaced resources in these namespaces "+
+			"only, so the operator can run with per-namespace Roles instead of a cluster-wide ClusterRole; "+
+			"objects in any other namespace are not seen and not reconciled. Cluster-scoped resources "+
+			"(Nodes, PersistentVolumes, PriorityClasses, Namespaces) are still read cluster-wide. Include "+
+			"every namespace the operator reads from, such as its own and a Gateway's.")
 	var watchCanaryInterval time.Duration
 	var watchCanaryFailAfter time.Duration
 	var watchCanaryNamespace string
@@ -590,6 +599,24 @@ func main() {
 		}
 	}
 
+	// Namespace-scoped watch (#1600). The canary's Lease entry above names
+	// its own namespace, so it is not narrowed by this and the canary keeps
+	// working when the operator's namespace is not in the list. An object in
+	// a namespace outside the list gets no status and no event, because the
+	// operator never sees it: this line is the record of what it does see.
+	watchNamespaceList, err := watchscope.Parse(watchNamespaces)
+	if err != nil {
+		setupLog.Error(err, "invalid --watch-namespaces")
+		os.Exit(1)
+	}
+	cacheOpts.DefaultNamespaces = watchscope.DefaultNamespaces(watchNamespaceList)
+	if len(watchNamespaceList) > 0 {
+		setupLog.Info("watching the listed namespaces only; objects in other namespaces are not reconciled",
+			"namespaces", watchNamespaceList)
+	} else {
+		setupLog.Info("watching all namespaces")
+	}
+
 	mgr, err := ctrl.NewManager(mgrCfg, ctrl.Options{
 		Scheme:                  scheme,
 		Metrics:                 metricsServerOptions,
@@ -650,9 +677,10 @@ func main() {
 	// its own lag behind a frozen cache. Alert only, never liveness.
 	if unreconciledGenerationInterval > 0 {
 		genLag, err := watchcanary.NewGenerationLagChecker(mgr, watchcanary.GenerationLagOptions{
-			Interval:  unreconciledGenerationInterval,
-			Threshold: unreconciledGenerationThreshold,
-			Log:       ctrl.Log.WithName("unreconciled-generation"),
+			Interval:   unreconciledGenerationInterval,
+			Threshold:  unreconciledGenerationThreshold,
+			Namespaces: watchNamespaceList,
+			Log:        ctrl.Log.WithName("unreconciled-generation"),
 		})
 		if err != nil {
 			setupLog.Error(err, "unable to create the unreconciled-generation checker")
@@ -895,6 +923,7 @@ func main() {
 		Client:             mgr.GetClient(),
 		Scheme:             mgr.GetScheme(),
 		APIReader:          mgr.GetAPIReader(),
+		WatchNamespaces:    watchNamespaceList,
 		InitContainerImage: initContainerImage,
 		AllowedCIDRs:       metalNodeAllowed,
 		ControllerVersion:  controllerVersion,
