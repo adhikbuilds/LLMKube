@@ -318,6 +318,12 @@ type BackendPool struct {
 	// force operators to inflate the generation cap. Compiled from
 	// ModelPool.spec.swapBudget. Zero means fall back to the dispatch default.
 	SwapBudget time.Duration `json:"swapBudget,omitempty"`
+
+	// SwapDelay is how long a cross-model request must wait before it may
+	// start a swap away from an idle resident member, so a client that gives
+	// up sooner never unloads it. Compiled from ModelPool.spec.swapDelay. Zero
+	// means no delay.
+	SwapDelay time.Duration `json:"swapDelay,omitempty"`
 }
 
 // Rule pairs a Match expression with a Route action.

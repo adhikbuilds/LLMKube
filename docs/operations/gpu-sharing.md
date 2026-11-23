@@ -601,6 +601,46 @@ waits out a swap nobody else wanted, because the resident's fast path is closed
 for every swap in flight, waited on or not. With 45 to 90 second boots that wait
 is bounded by `swapBudget`, and the alternative was a cold load on every retry.
 
+### swapDelay: keeping short-lived probes from swapping the slot
+
+Some clients send a request for a model they do not really want right now: a
+frontend or harness that checks each configured model with a short health
+request, say. Each one that names a member other than the resident starts a
+swap as soon as the resident is idle, and the swap keeps going after the probe
+gives up, so the resident is unloaded for a model nobody is waiting for, and the
+next real request swaps straight back.
+
+`swapDelay` (default `0s`, no delay) makes a request for a non-resident member
+wait before it may start a swap:
+
+```yaml
+spec:
+  swapBudget: 300s
+  swapDelay: 5s
+```
+
+When the delay is up, the swap starts only if a request for that member is
+still waiting: the one that started the clock, or another for the same member
+that arrived while it was held. A probe that gives up within the delay never
+touches the slot. The clock starts with the first request for the member and
+runs for as long as at least one request for it is held; once they have all
+left, the next request starts a fresh clock.
+
+- **Cold pool:** no delay. With nothing resident there is nothing to protect,
+  so the first request loads its member at once.
+- **Unchanged:** requests for the resident member are served as before, and a
+  rule with `poolActivation: IfIdle` still skips a busy resident at once. The
+  delay only holds a swap away from an idle resident; under the default `Wait`
+  a request that has already waited out the delay behind a busy resident swaps
+  as soon as the resident goes idle.
+- **Budget:** the delay counts toward `swapBudget`, so a held request's total
+  wait stays bounded. The API server rejects a pool whose `swapDelay` is at or
+  above its `swapBudget` (`300s` when unset), and a negative `swapDelay`.
+
+It only helps if the requests you want to ignore give up before the delay ends.
+A probe that waits for its response (a 30-second timeout, say) is still held
+when a 5-second delay is up and swaps the slot like any other request.
+
 ### A pooled router runs one replica
 
 When any backend resolves to a ModelPool member, the operator pins the router

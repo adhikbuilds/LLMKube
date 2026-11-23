@@ -137,6 +137,22 @@ spec:
                   failed with 503 + Retry-After (the caller can retry; the now-warm member
                   serves the next request). Defaults to 300s.
                 type: string
+              swapDelay:
+                description: |-
+                  SwapDelay is how long a request for a member that is not resident must
+                  wait before it may start a swap. When the delay is up, the swap starts
+                  only if that request, or another request for the same member that
+                  arrived while it waited, is still waiting; a client that gave up sooner
+                  (a health check or model probe with a short timeout, say) never unloads
+                  the resident member. It applies only when a member is resident and idle:
+                  a cold pool swaps at once, requests for the resident member are served
+                  as before, and a router rule with poolActivation IfIdle still skips a
+                  busy resident at once. The delay counts toward SwapBudget, so it must be
+                  shorter than it. Defaults to 0s (no delay).
+                type: string
+                x-kubernetes-validations:
+                - message: swapDelay must not be negative
+                  rule: duration(self) >= duration('0s')
               swapPolicy:
                 default: sticky
                 description: |-
@@ -161,6 +177,10 @@ spec:
                 swapPolicy reclaim to return the slot to default instead
               rule: '!(has(self.swapPolicy) && self.swapPolicy == ''reclaim-down''
                 && has(self.default) && size(self.default) > 0)'
+            - message: 'swapDelay must be shorter than swapBudget: the delay counts
+                toward the budget, so a request held for it could never start a swap'
+              rule: '!has(self.swapDelay) || duration(self.swapDelay) < (has(self.swapBudget)
+                ? duration(self.swapBudget) : duration(''300s''))'
           status:
             description: status defines the observed state of ModelPool
             properties:

@@ -1629,6 +1629,11 @@ func (in *ModelPoolSpec) DeepCopyInto(out *ModelPoolSpec) {
 		*out = new(v1.Duration)
 		**out = **in
 	}
+	if in.SwapDelay != nil {
+		in, out := &in.SwapDelay, &out.SwapDelay
+		*out = new(v1.Duration)
+		**out = **in
+	}
 	if in.ReclaimAfter != nil {
 		in, out := &in.ReclaimAfter, &out.ReclaimAfter
 		*out = new(v1.Duration)

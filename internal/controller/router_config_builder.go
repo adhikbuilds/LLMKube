@@ -501,6 +501,9 @@ func (r *ModelRouterReconciler) resolveBackendPool(
 		if pool.Spec.SwapBudget != nil {
 			bp.SwapBudget = pool.Spec.SwapBudget.Duration
 		}
+		if pool.Spec.SwapDelay != nil {
+			bp.SwapDelay = pool.Spec.SwapDelay.Duration
+		}
 		return bp, nil
 	}
 	return nil, nil

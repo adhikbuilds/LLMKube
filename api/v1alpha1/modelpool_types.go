@@ -135,6 +135,7 @@ type ModelPoolMember struct {
 // sticky, anti-thrash swap policy.
 //
 // +kubebuilder:validation:XValidation:rule="!(has(self.swapPolicy) && self.swapPolicy == 'reclaim-down' && has(self.default) && size(self.default) > 0)",message="swapPolicy reclaim-down releases the slot to zero and cannot be combined with default, which would warm it straight back up; use swapPolicy reclaim to return the slot to default instead"
+// +kubebuilder:validation:XValidation:rule="!has(self.swapDelay) || duration(self.swapDelay) < (has(self.swapBudget) ? duration(self.swapBudget) : duration('300s'))",message="swapDelay must be shorter than swapBudget: the delay counts toward the budget, so a request held for it could never start a swap"
 type ModelPoolSpec struct {
 	// NodeSelector pins the shared slot to a node (or node class). All members
 	// are expected to schedule onto the same node so they contend for the same
@@ -190,6 +191,20 @@ type ModelPoolSpec struct {
 	// +kubebuilder:default="300s"
 	// +optional
 	SwapBudget *metav1.Duration `json:"swapBudget,omitempty"`
+
+	// SwapDelay is how long a request for a member that is not resident must
+	// wait before it may start a swap. When the delay is up, the swap starts
+	// only if that request, or another request for the same member that
+	// arrived while it waited, is still waiting; a client that gave up sooner
+	// (a health check or model probe with a short timeout, say) never unloads
+	// the resident member. It applies only when a member is resident and idle:
+	// a cold pool swaps at once, requests for the resident member are served
+	// as before, and a router rule with poolActivation IfIdle still skips a
+	// busy resident at once. The delay counts toward SwapBudget, so it must be
+	// shorter than it. Defaults to 0s (no delay).
+	// +kubebuilder:validation:XValidation:rule="duration(self) >= duration('0s')",message="swapDelay must not be negative"
+	// +optional
+	SwapDelay *metav1.Duration `json:"swapDelay,omitempty"`
 
 	// ReclaimAfter is how long the resident non-default member must be
 	// continuously idle before the slot is reclaimed for spec.default. Only

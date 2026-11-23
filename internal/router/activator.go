@@ -143,6 +143,13 @@ type poolRuntime struct {
 	inflight map[string]int
 	waiting  map[string]int
 
+	// waitingSince is when the current run of held requests for a member
+	// began: set when waiting[member] goes from zero to one and cleared when it
+	// returns to zero. spec.swapDelay is timed from it, so a request that
+	// arrives while an earlier one for the same member is held inherits that
+	// request's clock, and one that arrives after they all left starts afresh.
+	waitingSince map[string]time.Time
+
 	// change is closed and replaced on every state transition so waiters can
 	// re-evaluate without a busy loop. Guarded by Activator.mu.
 	change chan struct{}
@@ -174,13 +181,14 @@ func (a *Activator) runtime(p *BackendPool) *poolRuntime {
 	pr, ok := a.pools[key]
 	if !ok {
 		pr = &poolRuntime{
-			namespace: p.Namespace,
-			pool:      p.Name,
-			members:   append([]string(nil), p.Members...),
-			swapErr:   make(map[string]swapFailure),
-			inflight:  make(map[string]int),
-			waiting:   make(map[string]int),
-			change:    make(chan struct{}),
+			namespace:    p.Namespace,
+			pool:         p.Name,
+			members:      append([]string(nil), p.Members...),
+			swapErr:      make(map[string]swapFailure),
+			inflight:     make(map[string]int),
+			waiting:      make(map[string]int),
+			waitingSince: make(map[string]time.Time),
+			change:       make(chan struct{}),
 		}
 		a.pools[key] = pr
 	}
@@ -223,8 +231,22 @@ func (a *Activator) AcquireWithMode(ctx context.Context, p *BackendPool, mode st
 		a.logger.Warn("model pool resident reconcile failed", "pool", pr.pool, "error", err)
 	}
 
+	if pr.waiting[member] == 0 {
+		pr.waitingSince[member] = time.Now()
+	}
 	pr.waiting[member]++
 	a.observeWaiting(pr, member)
+	// A swap away from an idle resident may start only once member has been
+	// wanted for spec.swapDelay. The run of held requests this one joined
+	// cannot end while it is registered, so the time is fixed here.
+	swapAllowedAt := pr.waitingSince[member].Add(p.SwapDelay)
+	var delayTimer *time.Timer
+	var delayC <-chan time.Time
+	defer func() {
+		if delayTimer != nil {
+			delayTimer.Stop()
+		}
+	}()
 	// arrivalGen is the swap this caller will wait through, or the one it will
 	// start itself. The comparison against a recorded failure is >= because a
 	// caller waits through every swap that begins after it registers.
@@ -250,6 +272,9 @@ func (a *Activator) AcquireWithMode(ctx context.Context, p *BackendPool, mode st
 	defer func() {
 		a.mu.Lock()
 		pr.waiting[member]--
+		if pr.waiting[member] == 0 {
+			delete(pr.waitingSince, member)
+		}
 		a.observeWaiting(pr, member)
 		// A started swap keeps loading: a target that comes up is warm for the
 		// retry, and spec.swapBudget is what bounds one that never does, so the
@@ -302,7 +327,18 @@ func (a *Activator) AcquireWithMode(ctx context.Context, p *BackendPool, mode st
 		if !pr.swapping && pr.resident != member {
 			incumbent := pr.resident
 			if incumbent == "" || (pr.inflight[incumbent] == 0 && pr.waiting[incumbent] == 0) {
-				a.startSwap(pr, incumbent, member, holdStart, p.SwapBudget)
+				// spec.swapDelay: hold the swap until member has been wanted
+				// for the delay, so a client that gives up sooner (a probe
+				// with a short timeout) never unloads the resident. A cold
+				// pool has nothing to protect and loads at once.
+				if wait := time.Until(swapAllowedAt); incumbent != "" && wait > 0 {
+					if delayTimer == nil {
+						delayTimer = time.NewTimer(wait)
+						delayC = delayTimer.C
+					}
+				} else {
+					a.startSwap(pr, incumbent, member, holdStart, p.SwapBudget)
+				}
 			} else if mode == PoolActivationIfIdle {
 				prommetrics.ModelPoolBusySkipsTotal.WithLabelValues(a.router, pr.pool, member).Inc()
 				a.mu.Unlock()
@@ -317,6 +353,10 @@ func (a *Activator) AcquireWithMode(ctx context.Context, p *BackendPool, mode st
 		a.mu.Unlock()
 		select {
 		case <-ch:
+			a.mu.Lock()
+		case <-delayC:
+			// The timer fires once; later passes see the delay as elapsed.
+			delayC = nil
 			a.mu.Lock()
 		case <-ctx.Done():
 			if errors.Is(ctx.Err(), context.DeadlineExceeded) {

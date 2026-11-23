@@ -18,6 +18,11 @@ spec:
   # minutes to load, without loosening the per-request generation cap. Default
   # 300s.
   swapBudget: 300s
+  # Optional: how long a request for a member that is not resident waits before
+  # it may swap out an idle resident; a client that gives up sooner (a short
+  # health probe) never unloads it. Counts toward swapBudget and must be shorter
+  # than it. Default 0s (no delay).
+  # swapDelay: 5s
   members:
     - inferenceServiceRef:
         name: judge

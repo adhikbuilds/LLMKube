@@ -1586,6 +1586,7 @@ func modelPoolFor(name string, memberNames ...string) *inferencev1alpha1.ModelPo
 		Spec: inferencev1alpha1.ModelPoolSpec{
 			SwapPolicy: inferencev1alpha1.ModelPoolSwapPolicySticky,
 			SwapBudget: &metav1.Duration{Duration: 6 * time.Minute},
+			SwapDelay:  &metav1.Duration{Duration: 5 * time.Second},
 			Members:    members,
 		},
 	}
@@ -1634,6 +1635,9 @@ func TestCompileRouterConfigResolvesBackendPool(t *testing.T) {
 	}
 	if local.Pool.SwapBudget != 6*time.Minute {
 		t.Errorf("Pool.SwapBudget = %s, want 6m (compiled from ModelPool.spec.swapBudget)", local.Pool.SwapBudget)
+	}
+	if local.Pool.SwapDelay != 5*time.Second {
+		t.Errorf("Pool.SwapDelay = %s, want 5s (compiled from ModelPool.spec.swapDelay)", local.Pool.SwapDelay)
 	}
 	// The cloud backend is not pooled.
 	if cfg.Backends[1].Pool != nil {
